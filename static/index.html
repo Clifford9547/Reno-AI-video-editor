@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视频特效生成器</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji"; background: #f0f2f5; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .container { max-width: 800px; width: 100%; margin: auto; background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+  h1 { color: #333; text-align: center; }
+  label { display: block; margin: 15px 0 5px; color: #555; font-weight: 600; }
+  input[type="file"], input[type="text"], textarea, select { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+  textarea { min-height: 120px; resize: vertical; }
+
+  /* --- 关键改动区域 START --- */
+
+  .action-area {
+    display: flex;
+    align-items: center;
+    gap: 15px; /* 按钮和进度条之间的间距 */
+    margin-top: 20px;
+  }
+
+  button {
+    position: relative;
+    background: #007aff; color: #fff; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; min-width: 150px;
+    font-size: 16px; font-weight: 600; transition: background-color 0.3s, color 0.1s ease-out;
+    flex-shrink: 0; /* 防止按钮被压缩 */
+  }
+  button:hover { background: #005ecb; }
+
+  button.loading {
+    pointer-events: none;
+    color: transparent; /* 隐藏文字 */
+  }
+
+  button.loading::after {
+    content: '';
+    position: absolute; top: 50%; left: 50%;
+    width: 18px; height: 18px;
+    margin: -9px 0 0 -9px;
+    border: 3px solid rgba(255, 255, 255, 0.8);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { 100% { transform: rotate(360deg); } }
+
+  #progress-container {
+    flex-grow: 1; /* 占据剩余空间 */
+    height: 12px;
+    background: #e9ecef;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  #progress {
+    height: 100%;
+    background: #007aff;
+    width: 0%;
+    transition: width 0.4s ease-in-out;
+    border-radius: 6px;
+  }
+
+  /* --- 关键改动区域 END --- */
+
+  #status { color: #666; margin-top: 15px; min-height: 20px; }
+
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>AI 视频特效生成器</h1>
+
+  <label for="videoFile">上传视频文件:</label>
+  <input type="file" id="videoFile" accept="video/*" />
+
+  <label for="modelSelect">选择 AI 模型:</label>
+  <select id="modelSelect">
+    <optgroup label="OpenAI">
+      <option value="openai|gpt-3.5-turbo">gpt-3.5-turbo</option>
+      <option value="openai|gpt-4o">gpt-4o</option>
+      <option value="openai|gpt-4o-mini">gpt-4o-mini</option>
+    </optgroup>
+    <optgroup label="Gemini">
+      <option value="gemini|gemini-pro">gemini-pro</option>
+    </optgroup>
+    <optgroup label="DeepSeek">
+      <option value="deepseek|deepseek-chat">deepseek-chat</option>
+    </optgroup>
+  </select>
+
+  <label for="apiKey">API Key:</label>
+  <input type="text" id="apiKey" placeholder="输入你的 API Key" />
+
+  <label for="effectsScript">AI 生成的特效脚本:</label>
+  <textarea id="effectsScript" rows="10" placeholder="这里会显示 AI 生成的特效脚本，可编辑..."></textarea>
+
+  <div class="action-area">
+    <button id="actionBtn" onclick="handleAction()">上传视频</button>
+    <div id="progress-container">
+      <div id="progress"></div>
+    </div>
+  </div>
+
+  <div id="status">正在等待操作...</div>
+
+</div>
+
+<script>
+  let step = 0;  // 0=上传视频, 1=生成特效脚本, 2=生成视频, 3=下载视频
+  let uploadedVideoPath = '';
+  let generatedVideoPath = '';
+  let progressInterval = null;
+
+  const btn = document.getElementById('actionBtn');
+  const statusEl = document.getElementById('status');
+  const progressEl = document.getElementById('progress');
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+  function setProgress(percent) {
+    progressEl.style.width = percent + '%';
+  }
+  function setLoading(isLoading) {
+    if (isLoading) {
+      btn.classList.add('loading');
+      btn.disabled = true;
+    } else {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+    }
+  }
+
+  // 改进的伪进度条，每个阶段从0到100
+  function startFakeProgress() {
+    clearInterval(progressInterval);
+    setProgress(0); // 确保从0开始
+    let p = 0;
+    progressInterval = setInterval(() => {
+      // 模拟一个先快后慢的加载过程
+      p += (100 - p) * 0.005;
+      if (p >= 99) {
+        p = 99; // 在任务完成前，停在99%
+        clearInterval(progressInterval);
+      }
+      setProgress(p);
+    }, 150);
+  }
+
+  function finishProgress() {
+    clearInterval(progressInterval);
+    setProgress(100);
+  }
+  function resetProgress() {
+    clearInterval(progressInterval);
+    setProgress(0);
+  }
+  function failProgress() {
+      clearInterval(progressInterval);
+      // 可选：失败时将进度条设为红色
+      progressEl.style.backgroundColor = '#dc3545';
+  }
+
+  async function handleAction() {
+    // 重置按钮和进度条状态
+    progressEl.style.backgroundColor = '#007aff';
+    resetProgress();
+    setLoading(true);
+    startFakeProgress();
+
+    try {
+      if (step === 0) {
+        await uploadVideo();
+        btn.textContent = '生成特效脚本';
+        step = 1;
+      } else if (step === 1) {
+        await generateEffectsScript();
+        btn.textContent = '生成新视频';
+        step = 2;
+      } else if (step === 2) {
+        await applyEffects();
+        btn.textContent = '下载视频';
+        step = 3;
+      } else if (step === 3) {
+        const downloadPath = generatedVideoPath.replace(/\\/g, '/').replace(/^\/+/, '');
+        window.location.href = '/download/' + downloadPath;
+        // 下载后可以重置状态
+        setStatus('视频已开始下载，可上传新视频。');
+        btn.textContent = '上传视频';
+        step = 0;
+        resetProgress();
+        setLoading(false);
+        return; // 提前返回，避免走下面的公共流程
+      }
+      finishProgress();
+    } catch (error) {
+      console.error('操作失败:', error);
+      setStatus(`错误: ${error.message}`);
+      failProgress(); // 标记进度条为失败状态
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // --- 后端交互函数 ---
+  // 注意：为了专注于前端修改，这里的异步函数都增加了错误处理
+  // 并使用 throw new Error() 来中断 handleAction 中的流程
+
+  async function uploadVideo() {
+    setStatus('正在上传视频...');
+    const fileInput = document.getElementById('videoFile');
+    if (!fileInput.files.length) {
+      throw new Error('请选择视频文件！');
+    }
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('type', 'video');
+
+    const res = await fetch('/api/upload/', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.path) {
+      uploadedVideoPath = data.path;
+      setStatus('视频上传成功！正在分析内容...');
+      await generatePrompt();
+    } else {
+      throw new Error(data.error || '上传失败');
+    }
+  }
+
+  async function generatePrompt() {
+    const res = await fetch('/api/transcribe/', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ video_path: uploadedVideoPath })
+    });
+    const data = await res.json();
+    if (data.segments) {
+      const promptRes = await fetch('/api/prompt/generate', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          segments: data.segments,
+          theme: "有趣", target_audience: "年轻人", video_purpose: "短视频分享",
+          user_config: { fontfile: "user_uploads/fonts/simhei.ttf", fontsize: 48, fontcolor: "white" }
+        })
+      });
+      const promptData = await promptRes.json();
+      document.getElementById('effectsScript').value = promptData.prompt;
+      setStatus('内容分析完成，请点击生成特效脚本！');
+    } else {
+      throw new Error(data.error || '视频转写失败');
+    }
+  }
+
+  async function generateEffectsScript() {
+    setStatus('正在调用 AI 生成特效脚本...');
+    const [provider, model] = document.getElementById('modelSelect').value.split('|');
+    const apiKey = document.getElementById('apiKey').value;
+    const prompt = document.getElementById('effectsScript').value;
+    if(!apiKey) throw new Error('请输入 API Key！');
+
+    const res = await fetch('/api/llm/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ provider, model, api_key: apiKey, prompt })
+    });
+    const data = await res.json();
+    if (data.script) {
+      document.getElementById('effectsScript').value = data.script;
+      setStatus('AI 已生成特效脚本！');
+    } else {
+      throw new Error(data.error || 'AI 调用失败');
+    }
+  }
+
+  async function applyEffects() {
+    setStatus('正在应用特效，生成最终视频...');
+    const script = document.getElementById('effectsScript').value;
+    const lines = script.split('\n').filter(line => line.trim());
+    const effectsList = lines.map(line => {
+      const [time, rest] = line.split(']', 2);
+      const [start, end] = time.replace('[', '').split(' - ').map(Number);
+      return { start, end, code: rest ? rest.trim() : '' };
+    });
+
+    const res = await fetch('/api/video/apply_effects', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ video_path: uploadedVideoPath, effects_list: effectsList })
+    });
+    const data = await res.json();
+    if (data.output_path) {
+      generatedVideoPath = '/' + data.output_path.replace(/\\/g, '/');
+      setStatus('新视频已生成！');
+    } else {
+      throw new Error(data.error || '视频生成失败');
+    }
+  }
+</script>
+</body>
+</html>
